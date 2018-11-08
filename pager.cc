@@ -63,7 +63,6 @@ void vm_create(pid_t pid){
   process *pr = new process;
   pr->pid = pid;
   pr->num_vpages = 0;
-  cout << "pid: " << pid << endl;
 
   //cout << "got here1" << endl;
   //for loop to set r/w bits to zero, ppage to -1 for all ppages
@@ -72,7 +71,6 @@ void vm_create(pid_t pid){
     pr->ptbr.ptes[i].write_enable = 0;
     pr->ptbr.ptes[i].ppage = 0;
   }
-  cout << "pr: " << (long)pr->ptbr.ptes[0].ppage << endl;
   
   //add to list of processes
   processList.insert(pair <pid_t,process*>(pid,pr));
@@ -88,28 +86,30 @@ void vm_switch(pid_t pid){
 
 int vm_fault(void *addr, bool write_flag){
   // get the vpage at address (assuming address is valid MUST UPDATE)
-  int ourAddr = (long)(addr - (long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
+  int virtAddr = (long)(addr - (long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
   // see if this is a valid virtual page
-  if(ourAddr >= current_process->vpages.size()){
+  if(virtAddr >= current_process->vpages.size()){
     return -1;
   }
   // it is a valid vpage
-  vpage *vp = current_process->vpages[ourAddr];
+  vpage *vp = current_process->vpages[virtAddr];
   
   // check read_enable - if 0, we know not in pmem, so we should bring it into pmem
-  if(vp->pte->read_enable == 0){
+  if(current_process->ptbr.ptes[virtAddr].read_enable == 0){
     // check if there is space in physical memory
     if(m_pages.empty()){
       return -1;
     }
     // if there is space in physical memory, allocate space
-    vp->pte->ppage = ((long)pm_physmem) + (VM_PAGESIZE * m_pages.top());
+    vp->pte->ppage = m_pages.top();
+    current_process->ptbr.ptes[virtAddr].ppage = m_pages.top();
     // flush physical page
-    memset((void*)vp->pte->ppage, 0, VM_PAGESIZE);
+    memset((void*)((long)pm_physmem+(VM_PAGESIZE*m_pages.top())), 0, VM_PAGESIZE);
     
     vp->pmem = m_pages.top();
     m_pages.pop();
     vp->pte->read_enable = 1;
+    current_process->ptbr.ptes[virtAddr].read_enable = 1;
     vp->read = 1;
     vp->valid = 1;
     vp->zeroed = 1;
@@ -117,15 +117,28 @@ int vm_fault(void *addr, bool write_flag){
   }
   if(write_flag){
     vp->pte->write_enable = 1;
+    current_process->ptbr.ptes[virtAddr].write_enable = 1;
+    vp->pte->read_enable = 1;
+    current_process->ptbr.ptes[virtAddr].read_enable = 1;
+    vp->read = 1;
     vp->write = 1;
   }
   return 0;
-	   
 }
 
 
 void vm_destroy(){
-  
+  // open up all of the ppages and diskblocks
+  for(int i =0; i < current_process->num_vpages; i++){
+    d_blocks.push(current_process->vpages[i]->diskblock);
+    m_pages.push(current_process->vpages[i]->pte->ppage);
+    
+    delete current_process->vpages[i];
+  }
+  // remove process from list of processors, then delete
+  processList.erase(current_process->pid);
+  delete current_process;
+  return;
 }
 
 void * vm_extend(){
@@ -143,7 +156,6 @@ void * vm_extend(){
     //finding the next invalid page address
     for(int i = 0; i < VM_ARENA_SIZE/VM_PAGESIZE; i++){
       if(count < 1){
-	cout << "ppage: " << page_table_base_register->ptes[i].ppage << endl;
 	count++;
       }
       if(page_table_base_register->ptes[i].ppage == 0){
@@ -151,18 +163,15 @@ void * vm_extend(){
 	
 	//adding the virtual page to the current process' vpage map
 	current_process->vpages.insert(pair <int, vpage*>(current_process->num_vpages, vp));
-	cout << "hai RAWR XD" << endl;
 	return (void*) ((current_process->num_vpages++ * VM_PAGESIZE) + VM_ARENA_BASEADDR);
 	
       }
     }
     //if there aren't anymore empty pages in pagetable
-    cout << "current pid: " << current_process->pid << endl;
     return (void*)-1;
   }
   else {
     //no diskblock to back it up
-    cout << "nah dis 1" << endl;
     return (void*)-1;
   }
 }
