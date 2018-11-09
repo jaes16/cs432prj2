@@ -47,7 +47,7 @@ static process *current_process;
 
 
 void vm_init(unsigned int memory_pages, unsigned int disk_blocks){
-  //cout << "coutscoutsjfafjfoiajf" << endl;
+
   // to keep track of state of physical memory
   for (int i = 0; i < memory_pages; i++){
     m_pages.push(i);
@@ -58,40 +58,38 @@ void vm_init(unsigned int memory_pages, unsigned int disk_blocks){
 }
 
 void vm_create(pid_t pid){
-  //cout << "fucking cout bruh" << endl;
   //create new process
   process *pr = new process;
   pr->pid = pid;
   pr->num_vpages = 0;
 
-  //cout << "got here1" << endl;
   //for loop to set r/w bits to zero, ppage to -1 for all ppages
   for(int i = 0; i < VM_ARENA_SIZE/VM_PAGESIZE; i++){
     pr->ptbr.ptes[i].read_enable = 0;
     pr->ptbr.ptes[i].write_enable = 0;
-    pr->ptbr.ptes[i].ppage = 0;
+    pr->ptbr.ptes[i].ppage = (unsigned long) -1;
   }
   
   //add to list of processes
   processList.insert(pair <pid_t,process*>(pid,pr));
-  //cout << "got here2" << endl;
 }
 
 void vm_switch(pid_t pid){
-  //cout << "switching" << endl;
+  // switch pointers
   current_process = processList[pid];
-  page_table_base_register = &current_process->ptbr;
+  page_table_base_register = &(current_process->ptbr);
 
 }
 
 int vm_fault(void *addr, bool write_flag){
-  // get the vpage at address (assuming address is valid MUST UPDATE)
-  int virtAddr = (long)(addr - (long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
+  // get the vpage at address
+  int virtAddr = (int)((unsigned long)addr - (unsigned long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
+
   // see if this is a valid virtual page
   if(virtAddr >= current_process->vpages.size()){
     return -1;
   }
-  // it is a valid vpage
+  // if it is a valid vpage
   vpage *vp = current_process->vpages[virtAddr];
   
   // check read_enable - if 0, we know not in pmem, so we should bring it into pmem
@@ -104,7 +102,7 @@ int vm_fault(void *addr, bool write_flag){
     vp->pte->ppage = m_pages.top();
     current_process->ptbr.ptes[virtAddr].ppage = m_pages.top();
     // flush physical page
-    memset((void*)((long)pm_physmem+(VM_PAGESIZE*m_pages.top())), 0, VM_PAGESIZE);
+    memset((void*)((unsigned long)pm_physmem+((unsigned long)VM_PAGESIZE*m_pages.top())), 0, VM_PAGESIZE);
     
     vp->pmem = m_pages.top();
     m_pages.pop();
@@ -129,7 +127,7 @@ int vm_fault(void *addr, bool write_flag){
 
 void vm_destroy(){
   // open up all of the ppages and diskblocks
-  for(int i =0; i < current_process->num_vpages; i++){
+  /*  for(int i =0; i < current_process->num_vpages; i++){
     d_blocks.push(current_process->vpages[i]->diskblock);
     m_pages.push(current_process->vpages[i]->pte->ppage);
     
@@ -137,7 +135,7 @@ void vm_destroy(){
   }
   // remove process from list of processors, then delete
   processList.erase(current_process->pid);
-  delete current_process;
+  delete current_process;*/
   return;
 }
 
@@ -158,12 +156,13 @@ void * vm_extend(){
       if(count < 1){
 	count++;
       }
-      if(page_table_base_register->ptes[i].ppage == 0){
+      if((int) page_table_base_register->ptes[i].ppage == -1){
+	page_table_base_register->ptes[i].ppage = 2147483647; //INT_MAX
 	vp->pte = &(page_table_base_register->ptes[i]);
 	
 	//adding the virtual page to the current process' vpage map
 	current_process->vpages.insert(pair <int, vpage*>(current_process->num_vpages, vp));
-	return (void*) ((current_process->num_vpages++ * VM_PAGESIZE) + VM_ARENA_BASEADDR);
+	return (void*) (((unsigned long)current_process->num_vpages++ * VM_PAGESIZE) + ((unsigned long) VM_ARENA_BASEADDR));
 	
       }
     }
