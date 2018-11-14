@@ -40,10 +40,16 @@ static stack<int> d_blocks;
 static stack<int> m_pages;
 
 //list of processes
-static map < pid_t, process*> processList;
+static map < pid_t, process*> process_list;
+
+//list of vpages in physical memory
+static vector<vpage*> phys_vpages;
 
 //current process and page table
 static process *current_process;
+
+//clock hand
+static int clock_hand;
 
 
 
@@ -72,12 +78,12 @@ void vm_create(pid_t pid){
   }
   
   //add to list of processes
-  processList.insert(pair <pid_t,process*>(pid,pr));
+  process_list.insert(pair <pid_t,process*>(pid,pr));
 }
 
 void vm_switch(pid_t pid){
   // switch pointers
-  current_process = processList[pid];
+  current_process = process_list[pid];
   page_table_base_register = &(current_process->ptbr);
 
 }
@@ -87,11 +93,12 @@ unsigned long clock_alg(){
   bool toEvictFound = false;
   unsigned long physPage = 0;
   while(!toEvictFound){
-    for(int i = 0; i < current_process->vpages.size(); i++){
+    for(int i = 0; i < 1; i++){
       
       //if the vp has been referenced, set reference bit to 0 and continue
       if(current_process->vpages[i]->referenced == 1){
 	current_process->vpages[i]->referenced = 0;
+	
       }
       else { //if not, this is the page to evict
 	toEvictFound = true;
@@ -121,38 +128,45 @@ int vm_fault(void *addr, bool write_flag){
   vpage *vp = current_process->vpages[vpNum];
   
   // check read_enable - if 0, we know not in pmem, so we should bring it into pmem
-  if(current_process->ptbr.ptes[vpNum].read_enable == 0){
-
+  if(vp->pte->read_enable == 0){
+    
     // check if physical memory is full
     if(m_pages.empty()){
       //run clock algorithm on virtual pages
       vp->pte->ppage = clock_alg();
-      current_process->ptbr.ptes[vpNum].ppage = vp->pte->ppage;
+      vp->pmem = vp->pte->ppage;
     }
     else {
       // if there is space in physical memory, allocate space
       vp->pte->ppage = m_pages.top();
-      current_process->ptbr.ptes[vpNum].ppage = m_pages.top();
+      vp->pmem = m_pages.top();
+      m_pages.pop();
     }
     
     // zero fill physical page
     memset((void*)((unsigned long)pm_physmem + ((unsigned long)VM_PAGESIZE * m_pages.top())), 0, VM_PAGESIZE);
+    vp->zeroed = 1;
+
+    if(vp->resident == 0){
+      disk_read(vp->diskblock, vp->pte->ppage);
+      vp->zeroed = 0;
+      vp->pte->write_enable = vp->write;
+    }
+    //if the page is resident, we still need to set its write bit to what it was in case we did something in clock
+    else if(vp->resident == 1){
+      vp->pte->write_enable = vp->write;
+    }
     
-    vp->pmem = m_pages.top();
-    m_pages.pop();
     vp->pte->read_enable = 1;
-    current_process->ptbr.ptes[vpNum].read_enable = 1;
     vp->read = 1;
     vp->valid = 1;
-    vp->zeroed = 1;
     vp->referenced = 1;
-    
+    vp->resident = 1;
+    phys_vpages.push_back(vp);
   }
   if(write_flag){
     vp->pte->write_enable = 1;
-    current_process->ptbr.ptes[vpNum].write_enable = 1;
     vp->pte->read_enable = 1;
-    current_process->ptbr.ptes[vpNum].read_enable = 1;
     vp->read = 1;
     vp->write = 1;
   }
@@ -171,7 +185,7 @@ void vm_destroy(){
   }
   
   // remove process from list of processors, then delete
-  processList.erase(current_process->pid);
+  process_list.erase(current_process->pid);
   delete current_process;
   
   return;
