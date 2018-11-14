@@ -49,7 +49,7 @@ static vector<vpage*> phys_vpages;
 static process *current_process;
 
 //clock hand
-static int clock_hand;
+static int clock_hand = 0;
 
 
 
@@ -93,24 +93,29 @@ unsigned long clock_alg(){
   bool toEvictFound = false;
   unsigned long physPage = 0;
   while(!toEvictFound){
-    for(int i = 0; i < 1; i++){
+    
+    for(int hand = clock_hand; hand < phys_vpages.size(); hand++){
       
       //if the vp has been referenced, set reference bit to 0 and continue
-      if(current_process->vpages[i]->referenced == 1){
-	current_process->vpages[i]->referenced = 0;
-	
+      if(phys_vpages[hand]->referenced == 1){
+	phys_vpages[hand]->referenced = 0;
+	phys_vpages[hand]->pte->read_enable = 0;
+	phys_vpages[hand]->pte->write_enable = 0;
       }
       else { //if not, this is the page to evict
 	toEvictFound = true;
 	//set this page's ppage to be the evictee's ppage, and set the evictee's resident bit to 0
-	physPage = current_process->vpages[i]->pte->ppage;
-	current_process->vpages[i]->resident = 0;
+	physPage = phys_vpages[hand]->pte->ppage;
+	phys_vpages[hand]->resident = 0;
 	//write evictee out to disk
-	disk_write(current_process->vpages[i]->diskblock, current_process->vpages[i]->pte->ppage);
+	disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
+	//phys_vpages[hand]->pte->ppage = (unsigned int) -1;
+	clock_hand = hand;
 	break;
       }
-      
     }
+    clock_hand = 0;
+    
   }
   return physPage;
 }
@@ -162,7 +167,8 @@ int vm_fault(void *addr, bool write_flag){
     vp->valid = 1;
     vp->referenced = 1;
     vp->resident = 1;
-    phys_vpages.push_back(vp);
+    //insert page into list right before the clock hand index
+    phys_vpages.insert(phys_vpages.begin()+clock_hand-1, vp);
   }
   if(write_flag){
     vp->pte->write_enable = 1;
