@@ -17,7 +17,7 @@ typedef struct {
   int pmem;
   int dirty;
   int referenced;
-  int resident;
+  int resident = -1;
   int zeroed;
   int valid;
   int read = 0;
@@ -49,7 +49,7 @@ static vector<vpage*> phys_vpages;
 static process *current_process;
 
 //clock hand
-static int clock_hand = 0;
+static int clock_hand = 1;
 
 
 
@@ -90,8 +90,10 @@ void vm_switch(pid_t pid){
 
 //evicts a page and returns the physical page of what was evicted
 unsigned long clock_alg(){
+  
   bool toEvictFound = false;
   unsigned long physPage = 0;
+  //cout << "current process: " << current_process << endl;
   while(!toEvictFound){
     
     for(int hand = clock_hand; hand < phys_vpages.size(); hand++){
@@ -109,7 +111,7 @@ unsigned long clock_alg(){
 	phys_vpages[hand]->resident = 0;
 	//write evictee out to disk
 	disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
-	//phys_vpages[hand]->pte->ppage = (unsigned int) -1;
+	phys_vpages.erase(phys_vpages.begin()+hand);
 	clock_hand = hand;
 	break;
       }
@@ -138,7 +140,9 @@ int vm_fault(void *addr, bool write_flag){
     // check if physical memory is full
     if(m_pages.empty()){
       //run clock algorithm on virtual pages
+      //cout << "here1" << endl;
       vp->pte->ppage = clock_alg();
+      //cout << "here2" << endl;
       vp->pmem = vp->pte->ppage;
     }
     else {
@@ -147,11 +151,11 @@ int vm_fault(void *addr, bool write_flag){
       vp->pmem = m_pages.top();
       m_pages.pop();
     }
-    
+    //cout << "here3" << endl;
     // zero fill physical page
-    memset((void*)((unsigned long)pm_physmem + ((unsigned long)VM_PAGESIZE * m_pages.top())), 0, VM_PAGESIZE);
+    memset((void*)((unsigned long)pm_physmem + ((unsigned long)VM_PAGESIZE * vp->pte->ppage)), 0, VM_PAGESIZE);
+    //cout << "here4" << endl;
     vp->zeroed = 1;
-
     if(vp->resident == 0){
       disk_read(vp->diskblock, vp->pte->ppage);
       vp->zeroed = 0;
@@ -161,22 +165,26 @@ int vm_fault(void *addr, bool write_flag){
     else if(vp->resident == 1){
       vp->pte->write_enable = vp->write;
     }
-    
+    //cout << "here5" << endl;
     vp->pte->read_enable = 1;
     vp->read = 1;
     vp->valid = 1;
     vp->referenced = 1;
     vp->resident = 1;
     //insert page into list right before the clock hand index
+    //cout << clock_hand << endl;
     phys_vpages.insert(phys_vpages.begin()+clock_hand-1, vp);
+    //cout << "here7" << endl;
+    clock_hand++;
   }
+  
   if(write_flag){
     vp->pte->write_enable = 1;
     vp->pte->read_enable = 1;
     vp->read = 1;
     vp->write = 1;
   }
-  return 0;
+    return 0;
 }
 
 
@@ -185,15 +193,17 @@ void vm_destroy(){
   // open up all of the ppages and diskblocks
   for(int i = 0; i < current_process->num_vpages; i++){
     d_blocks.push(current_process->vpages[i]->diskblock);
-    m_pages.push(current_process->vpages[i]->pte->ppage);
-    
+    if(current_process->vpages[i]->resident == 1){
+      m_pages.push(current_process->vpages[i]->pte->ppage);
+    }
     delete current_process->vpages[i];
   }
+  //cout << "balls" << endl;
   
   // remove process from list of processors, then delete
   process_list.erase(current_process->pid);
-  delete current_process;
-  
+  //cout << "current process: " << current_process << endl;
+  //delete current_process;
   return;
 }
 
@@ -205,7 +215,6 @@ void * vm_extend(){
     vp->diskblock = d_blocks.top();
     d_blocks.pop();
     vp->valid = 0;
-    vp->resident = 0;
     vp->zeroed = 0;
     vp->dirty = 0;
     
