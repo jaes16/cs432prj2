@@ -109,8 +109,11 @@ unsigned long clock_alg(){
 	//set this page's ppage to be the evictee's ppage, and set the evictee's resident bit to 0
 	physPage = phys_vpages[hand]->pte->ppage;
 	phys_vpages[hand]->resident = 0;
-	//write evictee out to disk
+	//write evictee out to disk, unless it hasn't been changed
+	if(phys_vpages[hand]->dirty){
 	disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
+	phys_vpages[hand]->dirty = 0;
+	}
 	phys_vpages.erase(phys_vpages.begin()+hand);
 	clock_hand = hand;
 	break;
@@ -183,6 +186,7 @@ int vm_fault(void *addr, bool write_flag){
     vp->pte->read_enable = 1;
     vp->read = 1;
     vp->write = 1;
+    vp->dirty = 1;
   }
     return 0;
 }
