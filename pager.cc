@@ -246,7 +246,17 @@ void * vm_extend(){
 }
 
 int vm_syslog(void *message, unsigned int len){
+  // get the vpage at address
+  int vpNum = (int)((unsigned long)message - (unsigned long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
 
+  // see if this is a valid virtual page
+  if(vpNum >= current_process->vpages.size()){
+    return -1;
+  }
+  // if it is a valid vpage...
+  vpage *vp = current_process->vpages[vpNum];
+
+  unsigned long dif_to_start = (unsigned long)message - ((unsigned long)(vpNum*VM_PAGESIZE) + ((unsigned long) VM_ARENA_BASEADDR));
 }
 
 
