@@ -5,7 +5,6 @@ using namespace std;
 
 int main()
 {
-  cout << "hi" << endl;
   char *p;
   p = (char *) vm_extend();
   p[0] = 'h';
@@ -18,5 +17,4 @@ int main()
   x[8000] = 'a';
   char *t = (char *) vm_extend();
   t[1] = 'a';
-  cout << "hi" << endl;
 }

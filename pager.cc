@@ -22,7 +22,7 @@ typedef struct {
   int valid;
   int read = 0;
   int write = 0;
-
+  pid_t pid;
 } vpage;
 
 
@@ -49,7 +49,7 @@ static vector<vpage*> phys_vpages;
 static process *current_process;
 
 //clock hand
-static int clock_hand = 1;
+static int clock_hand = 0;
 
 
 
@@ -97,7 +97,9 @@ unsigned long clock_alg(){
   while(!toEvictFound){
     
     for(int hand = clock_hand; hand < phys_vpages.size(); hand++){
-      
+      //cout << "hand: " << hand << endl;
+      int hold = phys_vpages[hand]->resident;
+      //cout << "made it" << endl;
       //if the vp has been referenced, set reference bit to 0 and continue
       if(phys_vpages[hand]->referenced == 1){
 	phys_vpages[hand]->referenced = 0;
@@ -111,8 +113,8 @@ unsigned long clock_alg(){
 	phys_vpages[hand]->resident = 0;
 	//write evictee out to disk, unless it hasn't been changed
 	if(phys_vpages[hand]->dirty){
-	disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
-	phys_vpages[hand]->dirty = 0;
+	  disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
+	  phys_vpages[hand]->dirty = 0;
 	}
 	phys_vpages.erase(phys_vpages.begin()+hand);
 	clock_hand = hand;
@@ -176,7 +178,7 @@ int vm_fault(void *addr, bool write_flag){
     vp->resident = 1;
     //insert page into list right before the clock hand index
     //cout << clock_hand << endl;
-    phys_vpages.insert(phys_vpages.begin()+clock_hand-1, vp);
+    phys_vpages.insert(phys_vpages.begin()+clock_hand, vp);
     //cout << "here7" << endl;
     clock_hand++;
   }
@@ -203,11 +205,17 @@ void vm_destroy(){
     delete current_process->vpages[i];
   }
   //cout << "balls" << endl;
-  
+  for(int i = 0; i < phys_vpages.size(); i++){
+    if(phys_vpages[i]->pid == current_process->pid){
+      phys_vpages.erase(phys_vpages.begin()+i);
+    }
+  }
   // remove process from list of processors, then delete
   process_list.erase(current_process->pid);
   //cout << "current process: " << current_process << endl;
-  //delete current_process;
+  delete current_process;
+  
+  clock_hand = 0;
   return;
 }
 
@@ -221,6 +229,7 @@ void * vm_extend(){
     vp->valid = 0;
     vp->zeroed = 0;
     vp->dirty = 0;
+    vp->pid = current_process->pid;
     
     //finding the next invalid page address
     for(int i = 0; i < VM_ARENA_SIZE/VM_PAGESIZE; i++){
@@ -250,13 +259,51 @@ int vm_syslog(void *message, unsigned int len){
   int vpNum = (int)((unsigned long)message - (unsigned long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
 
   // see if this is a valid virtual page
-  if(vpNum >= current_process->vpages.size()){
+  if(vpNum >= current_process->vpages.size() || current_process->vpages[vpNum]->pte->read_enable == 0){
     return -1;
   }
   // if it is a valid vpage...
   vpage *vp = current_process->vpages[vpNum];
 
-  unsigned long dif_to_start = (unsigned long)message - ((unsigned long)(vpNum*VM_PAGESIZE) + ((unsigned long) VM_ARENA_BASEADDR));
+  unsigned long dif_from_start = (unsigned long)message - ((unsigned long)(vpNum*VM_PAGESIZE) + ((unsigned long) VM_ARENA_BASEADDR));
+
+  unsigned long dif_to_end = ((unsigned long) VM_PAGESIZE) - dif_from_start;
+
+  string s;
+  int position_in_physmem = (int)(VM_PAGESIZE * vp->pte->ppage + dif_from_start);
+
+  //if the message is within one page
+  if(len <= dif_to_end){
+    s.append(((char*)pm_physmem + position_in_physmem), len);
+  }
+  else{
+    unsigned int counter = len - dif_to_end;
+    s.append(((char*)pm_physmem + position_in_physmem), dif_to_end);
+    
+    while(counter > 0){
+      vpNum++;
+      //if it's a valid vpage
+      if(vpNum >= current_process->vpages.size() || current_process->vpages[vpNum]->pte->read_enable == 0){
+	return -1;
+      }
+      vp = current_process->vpages[vpNum];
+      position_in_physmem = (int)(VM_PAGESIZE * vp->pte->ppage);
+      //if we have more than a page left to copy, append a whole page
+      if(counter >= VM_PAGESIZE){
+	s.append(((char*)pm_physmem + position_in_physmem), VM_PAGESIZE);
+	counter -= (unsigned int)VM_PAGESIZE;
+      }
+      //if not, then append what is left
+      else{
+	s.append(((char*)pm_physmem + position_in_physmem), counter);
+	break;
+      }
+    }
+    
+  }
+
+  cout << "syslog \t\t\t" << s << endl;
+  return 0;
 }
 
 
