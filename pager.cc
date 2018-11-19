@@ -112,7 +112,7 @@ unsigned long clock_alg(){
 	physPage = phys_vpages[hand]->pte->ppage;
 	phys_vpages[hand]->resident = 0;
 	//write evictee out to disk, unless it hasn't been changed
-	if(phys_vpages[hand]->dirty){
+	if(phys_vpages[hand]->dirty != 0){
 	  disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
 	  phys_vpages[hand]->dirty = 0;
 	}
@@ -141,7 +141,15 @@ int vm_fault(void *addr, bool write_flag){
   
   // check read_enable - if 0, we know not in pmem, so we should bring it into pmem
   if(vp->pte->read_enable == 0){
-    
+    if(vp->resident == 1){
+      vp->read = 1;
+      vp->valid = 1;
+      vp->referenced = 1;
+      vp->resident = 1;
+      vp->pte->read_enable = 1;
+      vp->pte->write_enable = vp->write;
+      return 0;
+    }
     // check if physical memory is full
     if(m_pages.empty()){
       //run clock algorithm on virtual pages
@@ -164,13 +172,11 @@ int vm_fault(void *addr, bool write_flag){
     if(vp->resident == 0){
       disk_read(vp->diskblock, vp->pte->ppage);
       vp->zeroed = 0;
-      vp->pte->write_enable = vp->write;
+      vp->resident = 1;
+      //vp->pte->write_enable = vp->write;
     }
     //if the page is resident, we still need to set its write bit to what it was in case we did something in clock
-    else if(vp->resident == 1){
-      vp->pte->write_enable = vp->write;
-    }
-    //cout << "here5" << endl;
+        //cout << "here5" << endl;
     vp->pte->read_enable = 1;
     vp->read = 1;
     vp->valid = 1;
@@ -196,6 +202,14 @@ int vm_fault(void *addr, bool write_flag){
 
 
 void vm_destroy(){
+  for(int i = 0; i < phys_vpages.size(); i++){
+    if(phys_vpages[i]->pid == current_process->pid){
+      phys_vpages.erase(phys_vpages.begin()+i);
+      if(i<clock_hand){
+	clock_hand--;
+      }
+    }
+  }
   // open up all of the ppages and diskblocks
   for(int i = 0; i < current_process->num_vpages; i++){
     d_blocks.push(current_process->vpages[i]->diskblock);
@@ -204,18 +218,11 @@ void vm_destroy(){
     }
     delete current_process->vpages[i];
   }
-  //cout << "balls" << endl;
-  for(int i = 0; i < phys_vpages.size(); i++){
-    if(phys_vpages[i]->pid == current_process->pid){
-      phys_vpages.erase(phys_vpages.begin()+i);
-    }
-  }
   // remove process from list of processors, then delete
   process_list.erase(current_process->pid);
   //cout << "current process: " << current_process << endl;
   delete current_process;
   
-  clock_hand = 0;
   return;
 }
 
@@ -294,6 +301,7 @@ int vm_syslog(void *message, unsigned int len){
       if(vpNum >= current_process->vpages.size()){
 	return -1;
       }
+      //if not in physical memory, bring it into physical memory
       if(current_process->vpages[vpNum]->pte->read_enable == 0){
 	if(vm_fault((void *)( vpNum * VM_PAGESIZE)+(unsigned long)VM_ARENA_BASEADDR, false)){
 	  return -1;
