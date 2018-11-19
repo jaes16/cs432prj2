@@ -255,12 +255,20 @@ void * vm_extend(){
 }
 
 int vm_syslog(void *message, unsigned int len){
+  if(((unsigned long) message) < ((unsigned long)VM_ARENA_BASEADDR)){
+    return -1;
+  }
   // get the vpage at address
   int vpNum = (int)((unsigned long)message - (unsigned long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
 
   // see if this is a valid virtual page
-  if(vpNum >= current_process->vpages.size() || current_process->vpages[vpNum]->pte->read_enable == 0){
+  if(vpNum >= current_process->vpages.size()){
     return -1;
+  }
+  if(current_process->vpages[vpNum]->pte->read_enable == 0){
+    if(vm_fault((void *)( vpNum * VM_PAGESIZE)+(unsigned long)VM_ARENA_BASEADDR, false)){
+      return -1;
+    }
   }
   // if it is a valid vpage...
   vpage *vp = current_process->vpages[vpNum];
@@ -283,8 +291,13 @@ int vm_syslog(void *message, unsigned int len){
     while(counter > 0){
       vpNum++;
       //if it's a valid vpage
-      if(vpNum >= current_process->vpages.size() || current_process->vpages[vpNum]->pte->read_enable == 0){
+      if(vpNum >= current_process->vpages.size()){
 	return -1;
+      }
+      if(current_process->vpages[vpNum]->pte->read_enable == 0){
+	if(vm_fault((void *)( vpNum * VM_PAGESIZE)+(unsigned long)VM_ARENA_BASEADDR, false)){
+	  return -1;
+	}
       }
       vp = current_process->vpages[vpNum];
       position_in_physmem = (int)(VM_PAGESIZE * vp->pte->ppage);
