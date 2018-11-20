@@ -116,6 +116,10 @@ unsigned long clock_alg(){
 	  disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
 	  phys_vpages[hand]->dirty = 0;
 	}
+	phys_vpages[hand]->pte->read_enable = 0;
+	phys_vpages[hand]->pte->write_enable = 0;
+	phys_vpages[hand]->read = 0;
+	phys_vpages[hand]->write = 0;
 	phys_vpages.erase(phys_vpages.begin()+hand);
 	clock_hand = hand;
 	break;
@@ -141,6 +145,8 @@ int vm_fault(void *addr, bool write_flag){
   
   // check read_enable - if 0, we know not in pmem, so we should bring it into pmem
   if(vp->pte->read_enable == 0){
+
+    //if the page is resident, we still need to set its write bit to what it was in case we did something in clock
     if(vp->resident == 1){
       vp->read = 1;
       vp->valid = 1;
@@ -148,14 +154,17 @@ int vm_fault(void *addr, bool write_flag){
       vp->resident = 1;
       vp->pte->read_enable = 1;
       vp->pte->write_enable = vp->write;
+      if(write_flag){
+	vp->write = 1;
+	vp->pte->write_enable = 1;
+	vp->dirty =1;
+      }
       return 0;
     }
     // check if physical memory is full
     if(m_pages.empty()){
       //run clock algorithm on virtual pages
-      //cout << "here1" << endl;
       vp->pte->ppage = clock_alg();
-      //cout << "here2" << endl;
       vp->pmem = vp->pte->ppage;
     }
     else {
@@ -164,31 +173,27 @@ int vm_fault(void *addr, bool write_flag){
       vp->pmem = m_pages.top();
       m_pages.pop();
     }
-    //cout << "here3" << endl;
     // zero fill physical page
     memset((void*)((unsigned long)pm_physmem + ((unsigned long)VM_PAGESIZE * vp->pte->ppage)), 0, VM_PAGESIZE);
-    //cout << "here4" << endl;
     vp->zeroed = 1;
+    // if we removed from physical memory and need to bring it back from disk
     if(vp->resident == 0){
       disk_read(vp->diskblock, vp->pte->ppage);
       vp->zeroed = 0;
       vp->resident = 1;
       //vp->pte->write_enable = vp->write;
     }
-    //if the page is resident, we still need to set its write bit to what it was in case we did something in clock
-        //cout << "here5" << endl;
     vp->pte->read_enable = 1;
     vp->read = 1;
     vp->valid = 1;
     vp->referenced = 1;
     vp->resident = 1;
+    vp->dirty = 0;
     //insert page into list right before the clock hand index
-    //cout << clock_hand << endl;
     phys_vpages.insert(phys_vpages.begin()+clock_hand, vp);
-    //cout << "here7" << endl;
     clock_hand++;
   }
-  
+  // if we are writing to this page, make it write enable and dirty
   if(write_flag){
     vp->pte->write_enable = 1;
     vp->pte->read_enable = 1;
@@ -196,7 +201,7 @@ int vm_fault(void *addr, bool write_flag){
     vp->write = 1;
     vp->dirty = 1;
   }
-    return 0;
+  return 0;
 }
 
 
@@ -252,12 +257,12 @@ void * vm_extend(){
       }
     }
     //if there aren't anymore empty pages in pagetable
-    return (void*)-1;
+    return NULL;
   }
   
   else {
     //no diskblock to back it up
-    return (void*)-1;
+    return NULL;
   }
 }
 
