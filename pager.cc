@@ -43,7 +43,7 @@ static stack<int> m_pages;
 static map < pid_t, process*> process_list;
 
 //list of vpages in physical memory
-static vector<vpage*> phys_vpages;
+static queue<vpage*> phys_vpages;
 
 //current process and page table
 static process *current_process;
@@ -96,41 +96,115 @@ unsigned long clock_alg(){
   //cout << "current process: " << current_process << endl;
   while(!toEvictFound){
     
-    for(int hand = clock_hand; hand < phys_vpages.size(); hand++){
-      //cout << "hand: " << hand << endl;
-      int hold = phys_vpages[hand]->resident;
-      //cout << "made it" << endl;
-      //if the vp has been referenced, set reference bit to 0 and continue
-      if(phys_vpages[hand]->referenced == 1){
-	phys_vpages[hand]->referenced = 0;
-	phys_vpages[hand]->pte->read_enable = 0;
-	phys_vpages[hand]->pte->write_enable = 0;
-      }
-      else { //if not, this is the page to evict
-	toEvictFound = true;
-	//set this page's ppage to be the evictee's ppage, and set the evictee's resident bit to 0
-	physPage = phys_vpages[hand]->pte->ppage;
-	phys_vpages[hand]->resident = 0;
-	//write evictee out to disk, unless it hasn't been changed
-	if(phys_vpages[hand]->dirty != 0){
-	  disk_write(phys_vpages[hand]->diskblock, phys_vpages[hand]->pte->ppage);
-	  phys_vpages[hand]->dirty = 0;
-	}
-	phys_vpages[hand]->pte->read_enable = 0;
-	phys_vpages[hand]->pte->write_enable = 0;
-	phys_vpages[hand]->read = 0;
-	phys_vpages[hand]->write = 0;
-	phys_vpages.erase(phys_vpages.begin()+hand);
-	clock_hand = hand;
-	break;
-      }
+    //if the vp has been referenced, set reference bit to 0 and continue
+    if(phys_vpages.front()->referenced == 1){
+      phys_vpages.front()->referenced = 0;
+      phys_vpages.front()->pte->read_enable = 0;
+      phys_vpages.front()->pte->write_enable = 0;
+      phys_vpages.push(phys_vpages.front());
+      phys_vpages.pop();
     }
-    clock_hand = 0;
-    
+    else { //if not, this is the page to evict
+      toEvictFound = true;
+      //set this page's ppage to be the evictee's ppage, and set the evictee's resident bit to 0
+      physPage = phys_vpages.front()->pte->ppage;
+      phys_vpages.front()->resident = 0;
+      //write evictee out to disk, unless it hasn't been changed or is zeroed
+      if(phys_vpages.front()->dirty == 1){
+	disk_write(phys_vpages.front()->diskblock, phys_vpages.front()->pte->ppage);
+	phys_vpages.front()->dirty = 0;
+      }
+      phys_vpages.front()->pte->read_enable = 0;
+      phys_vpages.front()->pte->write_enable = 0;
+      phys_vpages.front()->read = 0;
+      phys_vpages.front()->write = 0;
+      phys_vpages.pop();
+      break;
+    }
   }
   return physPage;
 }
 
+
+int vm_fault(void *addr, bool write_flag){
+  // get the vpage at address
+  int vpNum = (int)((unsigned long)addr - (unsigned long)VM_ARENA_BASEADDR) / VM_PAGESIZE;
+
+  // see if this is a valid virtual page
+  if(vpNum >= current_process->vpages.size()){
+    return -1;
+  }
+  // if it is a valid vpage...
+  vpage *vp = current_process->vpages[vpNum];
+  
+  // check read_enable - if 0, we know not in pmem, so we should bring it into pmem
+  if(vp->pte->read_enable == 0){
+
+    //if the page is resident, we still need to set its write bit to what it was in case we did something in clock
+    if(vp->resident == 1){
+      vp->read = 1;
+      vp->valid = 1;
+      vp->referenced = 1;
+      vp->pte->read_enable = 1;
+      vp->pte->write_enable = vp->write;
+      if(write_flag){
+	vp->write = 1;
+	vp->pte->write_enable = 1;
+	vp->dirty = 1;
+	vp->zeroed = 0;
+      }
+      return 0;
+    }
+
+    // then we know its not in physical memory
+    
+    // check if physical memory is full
+    if(m_pages.empty()){
+      //run clock algorithm on virtual pages
+      vp->pte->ppage = clock_alg();
+      vp->pmem = vp->pte->ppage;
+    }
+    else {
+      // if there is space in physical memory, allocate space
+      vp->pte->ppage = m_pages.top();
+      vp->pmem = m_pages.top();
+      m_pages.pop();
+    }
+
+    // if it should be zero filled, zero fill physical page
+    if(vp->zeroed == 1){
+      memset((void*)((unsigned long)pm_physmem + ((unsigned long)VM_PAGESIZE * vp->pte->ppage)), 0, VM_PAGESIZE);
+    } else {
+      disk_read(vp->diskblock, vp->pte->ppage);
+    }
+    // its readable and referenced, resident, not dirty yet, and only zeroes for now
+    vp->pte->read_enable = 1;
+    vp->read = 1;
+    vp->valid = 1;
+    vp->referenced = 1;
+    vp->resident = 1;
+    vp->dirty = 0;
+
+    //insert page into queue of pages in physical memory
+    phys_vpages.push(vp);
+
+
+    // if we removed from physical memory and need to bring it back from disk
+  }
+  // if we are writing to this page, make it write enable and dirty
+  if(write_flag){
+    vp->pte->write_enable = 1;
+    vp->pte->read_enable = 1;
+    vp->read = 1;
+    vp->write = 1;
+    vp->dirty = 1;
+    vp->zeroed = 0;
+    vp->referenced = 1;
+    vp->resident = 1;
+  }
+  return 0;
+}
+/*
 
 int vm_fault(void *addr, bool write_flag){
   // get the vpage at address
@@ -157,10 +231,14 @@ int vm_fault(void *addr, bool write_flag){
       if(write_flag){
 	vp->write = 1;
 	vp->pte->write_enable = 1;
-	vp->dirty =1;
+	vp->dirty = 1;
+	vp->zeroed = 0;
       }
       return 0;
     }
+
+    // then we know its not in physical memory
+    
     // check if physical memory is full
     if(m_pages.empty()){
       //run clock algorithm on virtual pages
@@ -175,13 +253,23 @@ int vm_fault(void *addr, bool write_flag){
     }
     // zero fill physical page
     memset((void*)((unsigned long)pm_physmem + ((unsigned long)VM_PAGESIZE * vp->pte->ppage)), 0, VM_PAGESIZE);
-    vp->zeroed = 1;
     // if we removed from physical memory and need to bring it back from disk
-    if(vp->resident == 0){
+    if(vp->resident == 0 && (vp->zeroed == 0)){
       disk_read(vp->diskblock, vp->pte->ppage);
       vp->zeroed = 0;
+      vp->pte->read_enable = 1;
+      vp->read = 1;
+      vp->valid = 1;
+      vp->referenced = 1;
       vp->resident = 1;
-      //vp->pte->write_enable = vp->write;
+      vp->dirty = 0;
+      if(write_flag){
+	vp->pte->write_enable = 1;
+	vp->write = 1;
+      }
+      phys_vpages.insert(phys_vpages.begin()+clock_hand, vp);
+      clock_hand++;
+      return 0;
     }
     vp->pte->read_enable = 1;
     vp->read = 1;
@@ -189,6 +277,7 @@ int vm_fault(void *addr, bool write_flag){
     vp->referenced = 1;
     vp->resident = 1;
     vp->dirty = 0;
+    vp->zeroed = 1;
     //insert page into list right before the clock hand index
     phys_vpages.insert(phys_vpages.begin()+clock_hand, vp);
     clock_hand++;
@@ -200,19 +289,20 @@ int vm_fault(void *addr, bool write_flag){
     vp->read = 1;
     vp->write = 1;
     vp->dirty = 1;
+    vp->zeroed = 0;
   }
   return 0;
 }
-
+*/
 
 
 void vm_destroy(){
   for(int i = 0; i < phys_vpages.size(); i++){
-    if(phys_vpages[i]->pid == current_process->pid){
-      phys_vpages.erase(phys_vpages.begin()+i);
-      if(i<clock_hand){
-	clock_hand--;
-      }
+    if(phys_vpages.front()->pid == current_process->pid){
+      phys_vpages.pop();
+    } else {
+      phys_vpages.push(phys_vpages.front());
+      phys_vpages.pop();
     }
   }
   // open up all of the ppages and diskblocks
@@ -239,7 +329,7 @@ void * vm_extend(){
     vp->diskblock = d_blocks.top();
     d_blocks.pop();
     vp->valid = 0;
-    vp->zeroed = 0;
+    vp->zeroed = 1;
     vp->dirty = 0;
     vp->pid = current_process->pid;
     
