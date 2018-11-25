@@ -174,7 +174,9 @@ int vm_fault(void *addr, bool write_flag){
     // if it should be zero filled, zero fill physical page
     if(vp->zeroed == 1){
       memset((void*)((unsigned long)pm_physmem + ((unsigned long)VM_PAGESIZE * vp->pte->ppage)), 0, VM_PAGESIZE);
-    } else {
+    }
+    // otherwise it must be read in from disk
+    else {
       disk_read(vp->diskblock, vp->pte->ppage);
     }
     // its readable and referenced, resident, not dirty yet, and only zeroes for now
